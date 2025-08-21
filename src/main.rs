@@ -1,37 +1,58 @@
-use rdkafka::config::ClientConfig;
-use rdkafka::producer::{FutureProducer, FutureRecord};
-use futures::Future;
+use rdkafka::{
+    ClientConfig,
+    consumer::{
+        Consumer,
+        StreamConsumer,
+    },
+    error::KafkaResult,
+    Message,
+    TopicPartitionList,
+};
+
 use std::time::Duration;
 
-fn create_producer() -> FutureProducer {
-    let mut config = ClientConfig::new();
-    config.set("bootstrap.servers", "localhost:9092")
-            .set("client.id", "my-rust-producer")
-            .set("acks", "all")
-            .set("linger.ms", "5")
-            .set("compression.type", "gzip");
+async fn consume_messages(group_id: &str, topics: &[&str]) -> KafkaResult<()> {
 
-            config.create().expect("Producer creation error")
-}
+    let consumer: StreamConsumer = ClientConfig::new()
+        .set("group.id", group_id)
+        .set("bootstrap.servers", "localhost:9092")
+        .set("enable.partition.eof", "false")
+        .set("section.timeout.ms", "6000")
+        .set("enable.auto.commit", "true")
+        .create()?;
+
+    consumer.subscribe(topics)?;
+
+    loop{
+        match consumer.recv().await {
+            Ok(m) => {
+                let payload = match m.payload_view::<str>() {
+                    Some(Ok(s)) => s,
+                    Some(Err(_)) => {
+                        println!("Error: message payload is not a string");
+                        continue;
+                    }
+                    None =>"",
+                };
+                println!("Received message: topic={}, partition={}, offset={}, key={:?}, payload={:?}",
+                         m.topic(), m.partition(), m.offset(), m.key(), payload);
+            },
+            Err(e) => {
+                println!("Error receiving message: {}", e);
+                
+            }
+        }
+    }
+    Ok(())
+} 
+
+
 #[tokio::main]
 async fn main() {
-    let producer = create_producer();
-    let topic_name = "my_topic";
+    let group_id = "my-rust-consumer-group";
+    let topics = ["my_topic"];
     
-    for i in 0..10 {
-        let key = format!("key-{}", i);
-        let payload = format!("message-{}", i);
-        let record = FutureRecord::to(topic_name)
-            .payload(&payload)
-            .key(&key);
-
-        let delivery_future = producer.send(record, Duration::from_secs(0));
-
-        delivery_future.await.map(move |delivery_status| {
-            println!("Message sent: key={}, payload={}, delivery_status={:?}", key, payload, delivery_status);
-        })
-        .unwrap();
+    if let Err(e) = consume_messages(group_id, &topics).await {
+        eprintln!("Error consuming messages: {}", e);
     }
-
-    println!("All messages sent successfully.");
 }
